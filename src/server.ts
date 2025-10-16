@@ -10,7 +10,7 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// Add header so ngrok skips its browser warning interstitial
+// skip ngrok warning banner
 app.use((_req, res, next) => {
   res.set("ngrok-skip-browser-warning", "true");
   next();
@@ -19,14 +19,18 @@ app.use((_req, res, next) => {
 const PORT = Number(process.env.PORT || 3000);
 const ALPHAVANTAGE_API_KEY = process.env.ALPHAVANTAGE_API_KEY || "";
 
-// Create MCP server
-const server = new McpServer({ name: "top-movers-server", version: "0.1.0" });
+// ────────────────────────── MCP Server ──────────────────────────
+const server = new McpServer({
+  name: "top-movers-server",
+  version: "0.2.0",
+});
 
-// Load built widget assets
+// ────────────────────────── Widget Loader ──────────────────────────
 const WIDGET_JS = (() => {
   try {
     return readFileSync("web/dist/widget.js", "utf8");
   } catch {
+    console.warn("⚠️  web/dist/widget.js not found — widget UI disabled.");
     return "";
   }
 })();
@@ -45,44 +49,41 @@ server.registerResource(
 <script type="module">${WIDGET_JS}</script>
         `.trim(),
         _meta: {
-          "openai/widgetDescription": "Displays top gainers and losers from Alpha Vantage and can call the topMovers tool from the UI.",
-          "openai/widgetPrefersBorder": true
-        }
-      }
-    ]
+          "openai/widgetDescription":
+            "Displays top gainers and losers from Alpha Vantage and can call the topMovers tool from the UI.",
+          "openai/widgetPrefersBorder": true,
+        },
+      },
+    ],
   })
 );
 
+// ────────────────────────── Business Logic ──────────────────────────
 async function fetchTopMovers(limit: number) {
   if (!ALPHAVANTAGE_API_KEY) {
     return {
       content: [{ type: "text", text: "Missing ALPHAVANTAGE_API_KEY in environment." }],
-      structuredContent: { error: "Missing API key" }
+      structuredContent: { error: "Missing API key" },
     };
   }
+
   const url = `https://www.alphavantage.co/query?function=TOP_GAINERS_LOSERS&apikey=${ALPHAVANTAGE_API_KEY}`;
   const { data } = await axios.get(url, { timeout: 15000 });
-  const topGainers: any[] = data?.top_gainers ?? [];
-  const topLosers: any[] = data?.top_losers ?? [];
-  const mostActivelyTraded: any[] = data?.most_actively_traded ?? [];
 
-  const clamp = (arr: any[]) => arr.slice(0, limit);
-
+  const clamp = (arr: any[] = []) => arr.slice(0, limit);
   return {
     content: [{ type: "text", text: `Showing top ${limit} movers.` }],
     structuredContent: {
-      gainers: clamp(topGainers),
-      losers: clamp(topLosers),
-      active: clamp(mostActivelyTraded),
-      lastSyncedAt: new Date().toISOString()
+      gainers: clamp(data?.top_gainers),
+      losers: clamp(data?.top_losers),
+      active: clamp(data?.most_actively_traded),
+      lastSyncedAt: new Date().toISOString(),
     },
-    _meta: {
-      source: "alphavantage"
-    }
+    _meta: { source: "alphavantage" },
   };
 }
 
-// Tool: topMovers
+// ────────────────────────── MCP Tool Registration ──────────────────────────
 server.registerTool(
   "topMovers",
   {
@@ -92,27 +93,19 @@ server.registerTool(
       "openai/outputTemplate": "ui://widget/top-movers.html",
       "openai/toolInvocation/invoking": "Fetching top movers…",
       "openai/toolInvocation/invoked": "Top movers fetched.",
-      "openai/widgetAccessible": true
+      "openai/widgetAccessible": true,
     },
     inputSchema: {
-      limit: z.number().int().min(1).max(50).optional().default(10)
-    }
+      limit: z.number().int().min(1).max(50).optional().default(10),
+    },
   },
-  async ({ limit = 10 }, _extra) => {
+  async ({ limit = 10 }) => {
     const result = await fetchTopMovers(limit);
-    return {
-      ...result,
-      content: result.content.map((c) => ({
-        ...c,
-        type: "text",
-        text: c.text,
-      })),
-    } as any; // ✅ simple cast fixes the mismatch
+    return { ...result } as any;
   }
-  
 );
 
-// Simple HTTP endpoint to call the tool logic directly (for local demo)
+// ────────────────────────── REST Endpoint ──────────────────────────
 app.post("/tools/topMovers", async (req, res) => {
   try {
     const limit = Number(req.body?.limit ?? 10);
@@ -123,35 +116,30 @@ app.post("/tools/topMovers", async (req, res) => {
   }
 });
 
-// Health and static serving for widget debug
-app.get("/health", (_req, res) => res.send("ok"));
-app.use("/web", express.static("web"));
-
-// MCP JSON-RPC endpoint
+// ────────────────────────── JSON-RPC /mcp Endpoint ──────────────────────────
 app.post("/mcp", async (req, res) => {
   try {
-    const body = req.body || {};
-    const id = body.id ?? null;
-    const method = body.method;
-    const params = body.params || {};
+    const { id = null, method, params = {} } = req.body || {};
 
-    // Minimal JSON-RPC bridge for tools/call → topMovers
     if (method === "tools/call" && params?.name === "topMovers") {
       const limit = Number(params?.arguments?.limit ?? 10);
       const result = await fetchTopMovers(Number.isFinite(limit) ? limit : 10);
       return res.json({ jsonrpc: "2.0", id, result });
     }
 
-    // Unsupported method
-    return res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+    res
+      .status(400)
+      .json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
   } catch (err: any) {
-    return res.status(500).json({ error: err?.message || "Server error" });
+    res.status(500).json({ error: err?.message || "Server error" });
   }
 });
 
+// ────────────────────────── Health & Static ──────────────────────────
+app.get("/health", (_req, res) => res.send("ok"));
+app.use("/web", express.static("web"));
+
+// ────────────────────────── Start ──────────────────────────
 app.listen(PORT, () => {
-  // eslint-disable-next-line no-console
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`✅ Server running on http://localhost:${PORT}`);
 });
-
-
