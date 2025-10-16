@@ -10,6 +10,12 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+
+console.log(
+    "Alpha Vantage key:",
+    process.env.ALPHA_VANTAGE_API_KEY ? "✅ Loaded" : "❌ Missing"
+  );
+
 // skip ngrok warning banner
 app.use((_req, res, next) => {
   res.set("ngrok-skip-browser-warning", "true");
