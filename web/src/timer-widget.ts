@@ -1,19 +1,46 @@
-type TimerCallParams = { durationSeconds?: number };
+type TimerCallParams = { name?: string; durationSeconds?: number };
+type ControlTimerParams = { timerId?: string; action?: 'pause' | 'resume' | 'stop' };
 
 declare global {
   interface Window {
     openai: {
-      callTool: (name: string, args?: TimerCallParams) => Promise<any>;
+      callTool: (name: string, args?: TimerCallParams | ControlTimerParams) => Promise<any>;
       toolOutput?: any;
     };
   }
 }
 
-// Ensure the global is available
-const root = document.getElementById("timer-root")!;
-
 // Export to make this an external module
 export {};
+
+const root = document.getElementById("timer-root")!;
+
+interface Timer {
+  id: string;
+  name: string;
+  remainingSeconds: number;
+  status: 'running' | 'paused' | 'stopped' | 'completed';
+  minutesLeft: number;
+  secondsLeft: number;
+}
+
+interface TimerPreset {
+  name: string;
+  durationSeconds: number;
+  label: string;
+}
+
+interface TimerHistory {
+  id: string;
+  name: string;
+  durationSeconds: number;
+  completedAt: string;
+}
+
+let activeTimers: Map<string, Timer> = new Map();
+let timerPresets: TimerPreset[] = [];
+let timerHistory: TimerHistory[] = [];
+let updateInterval: NodeJS.Timeout | null = null;
 
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -21,207 +48,568 @@ function formatTime(seconds: number): string {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-function createTimerDisplay(minutesLeft: number, secondsLeft: number) {
+function playNotificationSound() {
+  try {
+    // Create a simple beep sound using Web Audio API
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+    oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1);
+    
+    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+    
+    oscillator.start(audioContext.currentTime);
+    oscillator.stop(audioContext.currentTime + 0.3);
+  } catch (e) {
+    console.log("Could not play notification sound");
+  }
+}
+
+function createTimerCard(timer: Timer): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "timer-card";
+  card.style.cssText = `
+    background: white;
+    border: 2px solid #e1e8ed;
+    border-radius: 12px;
+    padding: 16px;
+    margin: 8px 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    transition: all 0.3s ease;
+  `;
+
+  const header = document.createElement("div");
+  header.style.cssText = `
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  `;
+
+  const nameEl = document.createElement("h3");
+  nameEl.textContent = timer.name;
+  nameEl.style.cssText = `
+    margin: 0;
+    font-size: 18px;
+    color: #2c3e50;
+  `;
+
+  const statusEl = document.createElement("span");
+  statusEl.textContent = timer.status === 'running' ? '▶️' : timer.status === 'paused' ? '⏸️' : '⏹️';
+  statusEl.style.cssText = `
+    font-size: 16px;
+    padding: 4px 8px;
+    background: ${timer.status === 'running' ? '#27ae60' : timer.status === 'paused' ? '#f39c12' : '#e74c3c'};
+    color: white;
+    border-radius: 6px;
+    font-size: 12px;
+  `;
+
+  header.appendChild(nameEl);
+  header.appendChild(statusEl);
+
+  const timeDisplay = document.createElement("div");
+  timeDisplay.className = `timer-display-${timer.id}`;
+  timeDisplay.style.cssText = `
+    font-size: 32px;
+    font-weight: bold;
+    text-align: center;
+    color: ${timer.remainingSeconds <= 10 ? '#e74c3c' : timer.remainingSeconds <= 30 ? '#f39c12' : '#2c3e50'};
+    margin: 12px 0;
+  `;
+  timeDisplay.textContent = formatTime(timer.remainingSeconds);
+
+  const controls = document.createElement("div");
+  controls.style.cssText = `
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+  `;
+
+  const pauseBtn = document.createElement("button");
+  pauseBtn.textContent = timer.status === 'running' ? "Pause" : "Resume";
+  pauseBtn.style.cssText = `
+    padding: 8px 16px;
+    background: ${timer.status === 'running' ? '#f39c12' : '#27ae60'};
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+  `;
+  pauseBtn.onclick = () => controlTimer(timer.id, timer.status === 'running' ? 'pause' : 'resume');
+
+  const stopBtn = document.createElement("button");
+  stopBtn.textContent = "Stop";
+  stopBtn.style.cssText = `
+    padding: 8px 16px;
+    background: #e74c3c;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+  `;
+  stopBtn.onclick = () => controlTimer(timer.id, 'stop');
+
+  controls.appendChild(pauseBtn);
+  controls.appendChild(stopBtn);
+
+  card.appendChild(header);
+  card.appendChild(timeDisplay);
+  card.appendChild(controls);
+
+  return card;
+}
+
+function createPresetButton(preset: TimerPreset): HTMLElement {
+  const button = document.createElement("button");
+  button.textContent = `${preset.label} - ${preset.name}`;
+  button.style.cssText = `
+    padding: 10px 16px;
+    background: #3498db;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    margin: 4px;
+    transition: background 0.2s;
+  `;
+  button.onmouseover = () => button.style.background = '#2980b9';
+  button.onmouseout = () => button.style.background = '#3498db';
+  button.onclick = () => callTimer(preset.name, preset.durationSeconds);
+  return button;
+}
+
+function createHistoryItem(history: TimerHistory): HTMLElement {
+  const item = document.createElement("div");
+  item.style.cssText = `
+    padding: 8px 12px;
+    background: #f8f9fa;
+    border-left: 4px solid #27ae60;
+    margin: 4px 0;
+    border-radius: 4px;
+    font-size: 14px;
+  `;
+  
+  const completedDate = new Date(history.completedAt).toLocaleString();
+  item.innerHTML = `
+    <strong>${history.name}</strong> - ${formatTime(history.durationSeconds)} 
+    <span style="color: #666; font-size: 12px;">(${completedDate})</span>
+  `;
+  
+  return item;
+}
+
+function updateTimerDisplay(timerId: string, remainingSeconds: number) {
+  const display = document.querySelector(`.timer-display-${timerId}`) as HTMLElement;
+  if (display) {
+    display.textContent = formatTime(remainingSeconds);
+    display.style.color = remainingSeconds <= 10 ? '#e74c3c' : remainingSeconds <= 30 ? '#f39c12' : '#2c3e50';
+  }
+}
+
+function renderUI() {
   root.innerHTML = "";
   
   const container = document.createElement("div");
   container.style.cssText = `
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 20px;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 20px;
   `;
 
-  const title = document.createElement("h2");
-  title.textContent = "⏰ Countdown Timer";
+  // Header
+  const header = document.createElement("div");
+  header.style.cssText = `
+    text-align: center;
+    margin-bottom: 24px;
+  `;
+
+  const title = document.createElement("h1");
+  title.textContent = "⏰ Advanced Timer Dashboard";
   title.style.cssText = `
-    margin: 0 0 20px 0;
-    color: #333;
-    font-size: 24px;
-  `;
-  container.appendChild(title);
-
-  const timerDisplay = document.createElement("div");
-  timerDisplay.id = "timer-display";
-  timerDisplay.style.cssText = `
-    font-size: 48px;
-    font-weight: bold;
+    margin: 0 0 8px 0;
     color: #2c3e50;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    margin: 20px 0;
-    text-align: center;
-    min-width: 200px;
+    font-size: 28px;
   `;
-  container.appendChild(timerDisplay);
 
-  const statusText = document.createElement("div");
-  statusText.id = "timer-status";
-  statusText.style.cssText = `
-    font-size: 16px;
+  const subtitle = document.createElement("p");
+  subtitle.textContent = `${activeTimers.size} active timers • ${timerHistory.length} completed`;
+  subtitle.style.cssText = `
+    margin: 0;
     color: #666;
-    margin-top: 10px;
-    text-align: center;
+    font-size: 14px;
   `;
-  container.appendChild(statusText);
 
-  const controls = document.createElement("div");
-  controls.style.cssText = `
-    margin-top: 20px;
+  header.appendChild(title);
+  header.appendChild(subtitle);
+
+  // Custom Timer Section
+  const customSection = document.createElement("div");
+  customSection.style.cssText = `
+    background: #f8f9fa;
+    padding: 16px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+  `;
+
+  const customTitle = document.createElement("h3");
+  customTitle.textContent = "🎯 Start Custom Timer";
+  customTitle.style.cssText = `
+    margin: 0 0 12px 0;
+    color: #2c3e50;
+    font-size: 18px;
+  `;
+
+  const customForm = document.createElement("div");
+  customForm.style.cssText = `
     display: flex;
-    gap: 10px;
+    gap: 8px;
+    align-items: center;
     flex-wrap: wrap;
-    justify-content: center;
   `;
 
-  const startButton = document.createElement("button");
-  startButton.textContent = "Start 30s Timer";
-  startButton.style.cssText = `
-    padding: 10px 20px;
-    background: #3498db;
-    color: white;
-    border: none;
-    border-radius: 5px;
-    cursor: pointer;
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.placeholder = "Timer name (e.g., Coffee Break)";
+  nameInput.style.cssText = `
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
     font-size: 14px;
+    flex: 1;
+    min-width: 150px;
   `;
-  startButton.onclick = () => callTimer(30);
-  controls.appendChild(startButton);
 
-  const startButton2 = document.createElement("button");
-  startButton2.textContent = "Start 2min Timer";
-  startButton2.style.cssText = `
-    padding: 10px 20px;
-    background: #e74c3c;
-    color: white;
-    border: none;
-    border-radius: 5px;
-    cursor: pointer;
+  const durationInput = document.createElement("input");
+  durationInput.type = "number";
+  durationInput.placeholder = "Seconds";
+  durationInput.min = "1";
+  durationInput.max = "7200";
+  durationInput.style.cssText = `
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
     font-size: 14px;
+    width: 100px;
   `;
-  startButton2.onclick = () => callTimer(120);
-  controls.appendChild(startButton2);
 
-  const startButton3 = document.createElement("button");
-  startButton3.textContent = "Start 5min Timer";
-  startButton3.style.cssText = `
-    padding: 10px 20px;
+  const startBtn = document.createElement("button");
+  startBtn.textContent = "Start Timer";
+  startBtn.style.cssText = `
+    padding: 8px 16px;
     background: #27ae60;
     color: white;
     border: none;
-    border-radius: 5px;
+    border-radius: 6px;
     cursor: pointer;
     font-size: 14px;
   `;
-  startButton3.onclick = () => callTimer(300);
-  controls.appendChild(startButton3);
-
-  container.appendChild(controls);
-  root.appendChild(container);
-
-  // Initialize display
-  updateTimerDisplay(minutesLeft, secondsLeft);
-}
-
-function updateTimerDisplay(minutesLeft: number, secondsLeft: number) {
-  const display = document.getElementById("timer-display");
-  const status = document.getElementById("timer-status");
-  
-  if (display) {
-    const totalSeconds = minutesLeft * 60 + secondsLeft;
-    display.textContent = formatTime(totalSeconds);
-    
-    if (totalSeconds <= 0) {
-      display.style.color = "#e74c3c";
-      if (status) status.textContent = "⏰ Time's up!";
-    } else if (totalSeconds <= 10) {
-      display.style.color = "#f39c12";
-      if (status) status.textContent = "⚠️ Almost done!";
-    } else {
-      display.style.color = "#2c3e50";
-      if (status) status.textContent = "⏳ Timer running...";
+  startBtn.onclick = () => {
+    const name = nameInput.value.trim() || "Custom Timer";
+    const duration = parseInt(durationInput.value);
+    if (duration > 0) {
+      callTimer(name, duration);
+      nameInput.value = "";
+      durationInput.value = "";
     }
+  };
+
+  customForm.appendChild(nameInput);
+  customForm.appendChild(durationInput);
+  customForm.appendChild(startBtn);
+
+  customSection.appendChild(customTitle);
+  customSection.appendChild(customForm);
+
+  // Presets Section
+  const presetsSection = document.createElement("div");
+  presetsSection.style.cssText = `
+    margin-bottom: 20px;
+  `;
+
+  const presetsTitle = document.createElement("h3");
+  presetsTitle.textContent = "⚡ Quick Presets";
+  presetsTitle.style.cssText = `
+    margin: 0 0 12px 0;
+    color: #2c3e50;
+    font-size: 18px;
+  `;
+
+  const presetsContainer = document.createElement("div");
+  presetsContainer.style.cssText = `
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  `;
+
+  timerPresets.forEach(preset => {
+    presetsContainer.appendChild(createPresetButton(preset));
+  });
+
+  presetsSection.appendChild(presetsTitle);
+  presetsSection.appendChild(presetsContainer);
+
+  // Active Timers Section
+  const activeSection = document.createElement("div");
+  activeSection.style.cssText = `
+    margin-bottom: 20px;
+  `;
+
+  const activeTitle = document.createElement("h3");
+  activeTitle.textContent = `🔄 Active Timers (${activeTimers.size})`;
+  activeTitle.style.cssText = `
+    margin: 0 0 12px 0;
+    color: #2c3e50;
+    font-size: 18px;
+  `;
+
+  const activeContainer = document.createElement("div");
+  activeContainer.id = "active-timers";
+
+  if (activeTimers.size === 0) {
+    const emptyMsg = document.createElement("p");
+    emptyMsg.textContent = "No active timers. Start one above!";
+    emptyMsg.style.cssText = `
+      text-align: center;
+      color: #666;
+      font-style: italic;
+      padding: 20px;
+    `;
+    activeContainer.appendChild(emptyMsg);
+  } else {
+    activeTimers.forEach(timer => {
+      activeContainer.appendChild(createTimerCard(timer));
+    });
   }
+
+  activeSection.appendChild(activeTitle);
+  activeSection.appendChild(activeContainer);
+
+  // History Section
+  const historySection = document.createElement("div");
+  historySection.style.cssText = `
+    background: #f8f9fa;
+    padding: 16px;
+    border-radius: 12px;
+  `;
+
+  const historyTitle = document.createElement("h3");
+  historyTitle.textContent = `📊 Recent History (${timerHistory.length})`;
+  historyTitle.style.cssText = `
+    margin: 0 0 12px 0;
+    color: #2c3e50;
+    font-size: 18px;
+  `;
+
+  const historyContainer = document.createElement("div");
+  historyContainer.id = "timer-history";
+
+  if (timerHistory.length === 0) {
+    const emptyMsg = document.createElement("p");
+    emptyMsg.textContent = "No completed timers yet.";
+    emptyMsg.style.cssText = `
+      text-align: center;
+      color: #666;
+      font-style: italic;
+      padding: 20px;
+    `;
+    historyContainer.appendChild(emptyMsg);
+  } else {
+    timerHistory.slice(-10).forEach(history => {
+      historyContainer.appendChild(createHistoryItem(history));
+    });
+  }
+
+  historySection.appendChild(historyTitle);
+  historyContainer.appendChild(historyContainer);
+
+  container.appendChild(header);
+  container.appendChild(customSection);
+  container.appendChild(presetsSection);
+  container.appendChild(activeSection);
+  container.appendChild(historySection);
+  root.appendChild(container);
 }
 
-let currentTimer: NodeJS.Timeout | null = null;
-
-function startCountdown(minutesLeft: number, secondsLeft: number) {
-  // Clear any existing timer
-  if (currentTimer) {
-    clearInterval(currentTimer);
+function startUpdateLoop() {
+  if (updateInterval) {
+    clearInterval(updateInterval);
   }
-
-  let totalSeconds = minutesLeft * 60 + secondsLeft;
   
-  // Update display immediately
-  updateTimerDisplay(Math.floor(totalSeconds / 60), totalSeconds % 60);
-  
-  currentTimer = setInterval(() => {
-    totalSeconds--;
+  updateInterval = setInterval(() => {
+    let hasUpdates = false;
     
-    if (totalSeconds <= 0) {
-      updateTimerDisplay(0, 0);
-      clearInterval(currentTimer!);
-      currentTimer = null;
-      
-      // Show completion message
-      const status = document.getElementById("timer-status");
-      if (status) {
-        status.textContent = "🎉 Timer completed!";
-        status.style.color = "#27ae60";
-        status.style.fontWeight = "bold";
+    activeTimers.forEach((timer, timerId) => {
+      if (timer.status === 'running' && timer.remainingSeconds > 0) {
+        timer.remainingSeconds--;
+        updateTimerDisplay(timerId, timer.remainingSeconds);
+        
+        if (timer.remainingSeconds <= 0) {
+          // Timer completed
+          playNotificationSound();
+          activeTimers.delete(timerId);
+          timerHistory.push({
+            id: timerId,
+            name: timer.name,
+            durationSeconds: timer.remainingSeconds + timer.remainingSeconds,
+            completedAt: new Date().toISOString()
+          });
+          hasUpdates = true;
+        }
       }
-    } else {
-      updateTimerDisplay(Math.floor(totalSeconds / 60), totalSeconds % 60);
+    });
+    
+    if (hasUpdates) {
+      renderUI();
     }
   }, 1000);
 }
 
-async function callTimer(durationSeconds: number) {
+async function callTimer(name: string, durationSeconds: number) {
   try {
-    const result = await window.openai.callTool("startTimer", { durationSeconds });
+    const result = await window.openai.callTool("startTimer", { name, durationSeconds });
     const structured = result?.structuredContent ?? window.openai.toolOutput ?? {};
     
     if (structured.error) {
-      const status = document.getElementById("timer-status");
-      if (status) {
-        status.textContent = `❌ Error: ${structured.error}`;
-        status.style.color = "#e74c3c";
-      }
+      alert(`Error: ${structured.error}`);
       return;
     }
     
-    const { minutesLeft = 0, secondsLeft = 0 } = structured;
-    startCountdown(minutesLeft, secondsLeft);
+    if (structured.timer) {
+      const timer: Timer = {
+        id: structured.timer.id,
+        name: structured.timer.name,
+        remainingSeconds: structured.timer.minutesLeft * 60 + structured.timer.secondsLeft,
+        status: structured.timer.status,
+        minutesLeft: structured.timer.minutesLeft,
+        secondsLeft: structured.timer.secondsLeft,
+      };
+      
+      activeTimers.set(timer.id, timer);
+      
+      if (structured.presets) {
+        timerPresets = structured.presets;
+      }
+      
+      if (structured.history) {
+        timerHistory = structured.history;
+      }
+      
+      renderUI();
+      startUpdateLoop();
+    }
     
   } catch (e) {
-    const status = document.getElementById("timer-status");
-    if (status) {
-      status.textContent = "❌ Failed to start timer";
-      status.style.color = "#e74c3c";
+    alert("Failed to start timer");
+  }
+}
+
+async function controlTimer(timerId: string, action: 'pause' | 'resume' | 'stop') {
+  try {
+    const result = await window.openai.callTool("controlTimer", { timerId, action });
+    const structured = result?.structuredContent ?? window.openai.toolOutput ?? {};
+    
+    if (structured.success) {
+      if (action === 'stop') {
+        activeTimers.delete(timerId);
+        if (structured.history) {
+          timerHistory = structured.history;
+        }
+      } else {
+        // Update timer status
+        const timer = activeTimers.get(timerId);
+        if (timer) {
+          timer.status = action === 'pause' ? 'paused' : 'running';
+        }
+      }
+      
+      renderUI();
+    } else {
+      alert(`Failed to ${action} timer`);
     }
+    
+  } catch (e) {
+    alert(`Failed to ${action} timer`);
+  }
+}
+
+async function refreshStatus() {
+  try {
+    const result = await window.openai.callTool("getTimerStatus", {});
+    const structured = result?.structuredContent ?? window.openai.toolOutput ?? {};
+    
+    if (structured.activeTimers) {
+      activeTimers.clear();
+      structured.activeTimers.forEach((t: any) => {
+        activeTimers.set(t.id, {
+          id: t.id,
+          name: t.name,
+          remainingSeconds: t.remainingSeconds,
+          status: t.status,
+          minutesLeft: t.minutesLeft,
+          secondsLeft: t.secondsLeft,
+        });
+      });
+    }
+    
+    if (structured.presets) {
+      timerPresets = structured.presets;
+    }
+    
+    if (structured.history) {
+      timerHistory = structured.history;
+    }
+    
+    renderUI();
+    startUpdateLoop();
+    
+  } catch (e) {
+    console.error("Failed to refresh status:", e);
   }
 }
 
 async function init() {
   try {
-    // Try to get initial timer data if available
+    // Try to get initial data
     const structured = window.openai.toolOutput ?? {};
-    const { minutesLeft = 0, secondsLeft = 0 } = structured;
     
-    createTimerDisplay(minutesLeft, secondsLeft);
-    
-    // If we have valid timer data, start the countdown
-    if (minutesLeft > 0 || secondsLeft > 0) {
-      startCountdown(minutesLeft, secondsLeft);
+    if (structured.activeTimers) {
+      structured.activeTimers.forEach((t: any) => {
+        activeTimers.set(t.id, {
+          id: t.id,
+          name: t.name,
+          remainingSeconds: t.remainingSeconds,
+          status: t.status,
+          minutesLeft: t.minutesLeft,
+          secondsLeft: t.secondsLeft,
+        });
+      });
     }
+    
+    if (structured.presets) {
+      timerPresets = structured.presets;
+    }
+    
+    if (structured.history) {
+      timerHistory = structured.history;
+    }
+    
+    renderUI();
+    startUpdateLoop();
+    
   } catch (e) {
-    // Fallback: show empty timer
-    createTimerDisplay(0, 0);
+    // Fallback: show empty state
+    renderUI();
   }
 }
 
