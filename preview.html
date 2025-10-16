@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Advanced Timer Widget Preview</title>
+<style>
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+}
+.preview-container {
+    max-width: 900px;
+    margin: 0 auto;
+    background: white;
+    border-radius: 16px;
+    padding: 30px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+}
+h1 { text-align: center; color: #2c3e50; margin-bottom: 10px; font-size: 32px; }
+.preview-info {
+    background: linear-gradient(135deg, #e3f2fd 0%, #f3e5f5 100%);
+    border: 2px solid #2196f3;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 30px;
+    font-size: 16px;
+    color: #1976d2;
+    text-align: center;
+}
+.features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 20px;
+    margin-bottom: 30px;
+}
+.feature-card {
+    background: #f8f9fa;
+    padding: 20px;
+    border-radius: 12px;
+    border-left: 4px solid #27ae60;
+}
+.feature-card h3 { margin: 0 0 10px 0; color: #2c3e50; font-size: 18px; }
+.feature-card p { margin: 0; color: #666; font-size: 14px; line-height: 1.5; }
+.widget-container {
+    border: 2px solid #e1e8ed;
+    border-radius: 12px;
+    padding: 20px;
+    background: #fafbfc;
+}
+.widget-title { text-align: center; margin-bottom: 20px; color: #2c3e50; font-size: 20px; font-weight: 600; }
+.status-bar {
+    background: #e8f5e8;
+    border: 1px solid #4caf50;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 20px;
+    text-align: center;
+    font-size: 14px;
+    color: #2e7d32;
+}
+.error-bar {
+    background: #ffebee;
+    border: 1px solid #f44336;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 20px;
+    text-align: center;
+    font-size: 14px;
+    color: #c62828;
+    display: none;
+}
+.controls {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+.btn-primary { background: #2196f3; color: white; }
+.btn-primary:hover { background: #1976d2; }
+.btn-success { background: #4caf50; color: white; }
+.btn-success:hover { background: #388e3c; }
+.btn-warning { background: #ff9800; color: white; }
+.btn-warning:hover { background: #f57c00; }
+.btn-danger { background: #f44336; color: white; }
+.btn-danger:hover { background: #d32f2f; }
+.logs {
+    background: #263238;
+    color: #eceff1;
+    padding: 15px;
+    border-radius: 8px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-top: 20px;
+}
+.log-entry { margin: 2px 0; }
+.log-time { color: #81c784; }
+.log-error { color: #f48fb1; }
+.log-success { color: #a5d6a7; }
+</style>
+</head>
+<body>
+<div class="preview-container">
+    <h1>⏰ Advanced Timer Widget Preview</h1>
+    
+    <div class="preview-info">
+        <strong>Interactive Preview Mode</strong><br>
+        Simulates the timer widget with mock data. Timers respond to controls. 
+    </div>
+
+    <div class="features">
+        <div class="feature-card">
+            <h3>🎯 Multiple Timers</h3>
+            <p>Run unlimited timers simultaneously with unique IDs and individual controls.</p>
+        </div>
+        <div class="feature-card">
+            <h3>⏸️ Pause/Resume</h3>
+            <p>Pause running timers and resume them later without losing progress.</p>
+        </div>
+        <div class="feature-card">
+            <h3>🏷️ Custom Names</h3>
+            <p>Label your timers with meaningful names like "Coffee Break" or "Work Session".</p>
+        </div>
+        <div class="feature-card">
+            <h3>⚡ Quick Presets</h3>
+            <p>One-click timer starts with predefined durations for common activities.</p>
+        </div>
+        <div class="feature-card">
+            <h3>📊 Timer History</h3>
+            <p>Track completed timers with timestamps and duration information.</p>
+        </div>
+        <div class="feature-card">
+            <h3>🔊 Sound Alerts</h3>
+            <p>Audio notifications when timers complete using Web Audio API.</p>
+        </div>
+    </div>
+
+    <div class="status-bar" id="status-bar">
+        ✅ Widget loaded successfully • Mock mode active
+    </div>
+    
+    <div class="error-bar" id="error-bar">
+        ❌ Widget failed to load
+    </div>
+
+    <div class="controls">
+        <button class="btn btn-primary" onclick="testStartTimer()">Start Test Timer</button>
+        <button class="btn btn-success" onclick="testPresetTimer()">Start Preset Timer</button>
+        <button class="btn btn-warning" onclick="testMultipleTimers()">Start Multiple Timers</button>
+        <button class="btn btn-danger" onclick="clearAllTimers()">Clear All Timers</button>
+    </div>
+
+    <div class="widget-container">
+        <div class="widget-title">Timer Dashboard</div>
+        <div id="timer-root"></div>
+    </div>
+
+    <div class="logs" id="logs">
+        <div class="log-entry"><span class="log-time">[Loading]</span> Initializing timer widget preview...</div>
+    </div>
+</div>
+
+<!-- Load the actual TypeScript widget -->
+<script type="module" src="web/dist/timer-widget.js"></script>
+</body>
+</html>
