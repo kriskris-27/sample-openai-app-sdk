@@ -1,128 +1,141 @@
+// ────────────────────────── Imports ──────────────────────────
 import express from "express";
 import dotenv from "dotenv";
-import axios from "axios";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 
+// ────────────────────────── Config ──────────────────────────
 dotenv.config();
-
 const app = express();
 app.use(express.json());
 
-
-console.log(
-    "Alpha Vantage key:",
-    process.env.ALPHAVANTAGE_API_KEY ? "✅ Loaded" : "❌ Missing"
-  );
-
-// skip ngrok warning banner
+// Skip ngrok banner
 app.use((_req, res, next) => {
   res.set("ngrok-skip-browser-warning", "true");
   next();
 });
 
 const PORT = Number(process.env.PORT || 3000);
-const ALPHAVANTAGE_API_KEY = "X6358EK4LJQESFCV";
+
+// ────────────────────────── Logger ──────────────────────────
+const log = {
+  info: (...args: any[]) => console.log("ℹ️", ...args),
+  error: (...args: any[]) => console.error("❌", ...args),
+  success: (...args: any[]) => console.log("✅", ...args),
+};
 
 // ────────────────────────── MCP Server ──────────────────────────
 const server = new McpServer({
-  name: "top-movers-server",
-  version: "0.2.0",
+  name: "timer-countdown-server",
+  version: "1.0.0",
 });
 
 // ────────────────────────── Widget Loader ──────────────────────────
-const WIDGET_JS = (() => {
+const TIMER_WIDGET_JS = (() => {
   try {
-    return readFileSync("web/dist/widget.js", "utf8");
+    return readFileSync("web/dist/timer-widget.js", "utf8");
   } catch {
-    console.warn("⚠️  web/dist/widget.js not found — widget UI disabled.");
+    console.warn("⚠️ web/dist/timer-widget.js not found — widget UI disabled.");
     return "";
   }
 })();
 
-server.registerResource(
-  "top-movers-widget",
-  "ui://widget/top-movers.html",
-  {},
-  async () => ({
-    contents: [
-      {
-        uri: "ui://widget/top-movers.html",
-        mimeType: "text/html+skybridge",
-        text: `
-<div id="top-movers-root"></div>
-<script type="module">${WIDGET_JS}</script>
-        `.trim(),
-        _meta: {
-          "openai/widgetDescription":
-            "Displays top gainers and losers from Alpha Vantage and can call the topMovers tool from the UI.",
-          "openai/widgetPrefersBorder": true,
-        },
-      },
-    ],
-  })
-);
+// ────────────────────────── Timer Logic ──────────────────────────
+async function startTimer(durationSeconds: number) {
+  try {
+    if (durationSeconds <= 0) {
+      throw new Error("Duration must be greater than 0");
+    }
 
-// ────────────────────────── Business Logic ──────────────────────────
-async function fetchTopMovers(limit: number) {
-  if (!ALPHAVANTAGE_API_KEY) {
+    if (durationSeconds > 3600) { // Max 1 hour
+      throw new Error("Duration cannot exceed 3600 seconds (1 hour)");
+    }
+
+    const minutesLeft = Math.floor(durationSeconds / 60);
+    const secondsLeft = durationSeconds % 60;
+
     return {
-      content: [{ type: "text", text: "Missing ALPHAVANTAGE_API_KEY in environment." }],
-      structuredContent: { error: "Missing API key" },
+      content: [
+        {
+          type: "text",
+          text: `⏰ Timer started for ${minutesLeft}m ${secondsLeft}s!`,
+        },
+      ],
+      structuredContent: {
+        secondsLeft,
+        minutesLeft,
+        totalDuration: durationSeconds,
+        timestamp: new Date().toISOString(),
+      },
+      _meta: {
+        source: "timer-server",
+        widgetType: "countdown",
+      },
+    };
+  } catch (error: any) {
+    log.error("Timer start failed:", error.message);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `❌ Error: ${error.message}`,
+        },
+      ],
+      structuredContent: {
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      },
     };
   }
-
-  const url = `https://www.alphavantage.co/query?function=TOP_GAINERS_LOSERS&apikey=${ALPHAVANTAGE_API_KEY}`;
-  const { data } = await axios.get(url, { timeout: 15000 });
-
-  const clamp = (arr: any[] = []) => arr.slice(0, limit);
-  return {
-    content: [{ type: "text", text: `Showing top ${limit} movers.` }],
-    structuredContent: {
-      gainers: clamp(data?.top_gainers),
-      losers: clamp(data?.top_losers),
-      active: clamp(data?.most_actively_traded),
-      lastSyncedAt: new Date().toISOString(),
-    },
-    _meta: { source: "alphavantage" },
-  };
 }
 
 // ────────────────────────── MCP Tool Registration ──────────────────────────
 server.registerTool(
-  "topMovers",
+  "startTimer",
   {
-    title: "Top Movers",
-    description: "Fetch Alpha Vantage TOP_GAINERS_LOSERS and return top gainers/losers.",
+    title: "Start Timer",
+    description: "Start a countdown timer with specified duration in seconds.",
     _meta: {
-      "openai/outputTemplate": "ui://widget/top-movers.html",
-      "openai/toolInvocation/invoking": "Fetching top movers…",
-      "openai/toolInvocation/invoked": "Top movers fetched.",
+      "openai/outputTemplate": "ui://widget/timer.html",
+      "openai/toolInvocation/invoking": "Starting timer…",
+      "openai/toolInvocation/invoked": "Timer started successfully.",
       "openai/widgetAccessible": true,
     },
     inputSchema: {
-      limit: z.number().int().min(1).max(50).optional().default(10),
+      durationSeconds: z.number().int().min(1).max(3600),
     },
   },
-  async ({ limit = 10 }) => {
-    const result = await fetchTopMovers(limit);
-    return { ...result } as any;
+  async ({ durationSeconds }) => {
+    const result = await startTimer(durationSeconds);
+    return result as unknown as any;
   }
 );
 
-// ────────────────────────── REST Endpoint ──────────────────────────
-app.post("/tools/topMovers", async (req, res) => {
+// ────────────────────────── REST API Endpoint ──────────────────────────
+app.post("/tools/startTimer", async (req, res) => {
   try {
-    const limit = Number(req.body?.limit ?? 10);
-    const response = await fetchTopMovers(Number.isFinite(limit) ? limit : 10);
+    const { durationSeconds } = req.body;
+    
+    if (!durationSeconds || typeof durationSeconds !== "number") {
+      return res.status(400).json({
+        error: "durationSeconds parameter is required and must be a number",
+        example: { durationSeconds: 60 },
+      });
+    }
+
+    const response = await startTimer(durationSeconds);
     res.json(response);
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || "Server error" });
+    log.error("REST API error:", err.message);
+    res.status(500).json({ 
+      error: err.message || "Internal server error",
+      timestamp: new Date().toISOString(),
+    });
   }
 });
 
-// ────────────────────────── JSON-RPC /mcp Endpoint ──────────────────────────
+// ────────────────────────── MCP JSON-RPC Endpoint ──────────────────────────
 app.post("/mcp", async (req, res) => {
   try {
     const { id = null, method, params = {} } = req.body || {};
@@ -136,13 +149,13 @@ app.post("/mcp", async (req, res) => {
           protocolVersion: "2024-11-05",
           capabilities: {
             tools: {},
-            resources: {}
+            resources: {},
           },
           serverInfo: {
-            name: "top-movers-server",
-            version: "0.2.0"
-          }
-        }
+            name: "timer-countdown-server",
+            version: "1.0.0",
+          },
+        },
       });
     }
 
@@ -151,29 +164,32 @@ app.post("/mcp", async (req, res) => {
         jsonrpc: "2.0",
         id,
         result: {
-          tools: [{
-            name: "topMovers",
-            title: "Top Movers",
-            description: "Fetch Alpha Vantage TOP_GAINERS_LOSERS and return top gainers/losers.",
-            inputSchema: {
-              type: "object",
-              properties: {
-                limit: {
-                  type: "number",
-                  minimum: 1,
-                  maximum: 50,
-                  default: 10
-                }
-              }
+          tools: [
+            {
+              name: "startTimer",
+              title: "Start Timer",
+              description: "Start a countdown timer with specified duration in seconds.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  durationSeconds: {
+                    type: "number",
+                    description: "Duration in seconds (1-3600)",
+                    minimum: 1,
+                    maximum: 3600,
+                  },
+                },
+                required: ["durationSeconds"],
+              },
+              _meta: {
+                "openai/outputTemplate": "ui://widget/timer.html",
+                "openai/toolInvocation/invoking": "Starting timer…",
+                "openai/toolInvocation/invoked": "Timer started successfully.",
+                "openai/widgetAccessible": true,
+              },
             },
-            _meta: {
-              "openai/outputTemplate": "ui://widget/top-movers.html",
-              "openai/toolInvocation/invoking": "Fetching top movers…",
-              "openai/toolInvocation/invoked": "Top movers fetched.",
-              "openai/widgetAccessible": true
-            }
-          }]
-        }
+          ],
+        },
       });
     }
 
@@ -182,58 +198,84 @@ app.post("/mcp", async (req, res) => {
         jsonrpc: "2.0",
         id,
         result: {
-          resources: [{
-            uri: "ui://widget/top-movers.html",
-            name: "top-movers-widget",
-            description: "Top movers widget component",
-            mimeType: "text/html+skybridge"
-          }]
-        }
+          resources: [
+            {
+              uri: "ui://widget/timer.html",
+              name: "timer-widget",
+              description: "Interactive countdown timer widget",
+              mimeType: "text/html+skybridge",
+            },
+          ],
+        },
       });
     }
 
     if (method === "resources/read") {
       const uri = params?.uri;
-      if (uri === "ui://widget/top-movers.html") {
+      if (uri === "ui://widget/timer.html") {
         return res.json({
           jsonrpc: "2.0",
           id,
           result: {
-            contents: [{
-              uri: "ui://widget/top-movers.html",
-              mimeType: "text/html+skybridge",
-              text: `
-<div id="top-movers-root"></div>
-<script type="module">${WIDGET_JS}</script>
-              `.trim(),
-              _meta: {
-                "openai/widgetDescription": "Displays top gainers and losers from Alpha Vantage and can call the topMovers tool from the UI.",
-                "openai/widgetPrefersBorder": true
-              }
-            }]
-          }
+            contents: [
+              {
+                uri: "ui://widget/timer.html",
+                mimeType: "text/html+skybridge",
+                text: `
+<div id="timer-root"></div>
+<script type="module">${TIMER_WIDGET_JS}</script>
+                `.trim(),
+                _meta: {
+                  "openai/widgetDescription": "Displays a live countdown timer that updates every second. Can call startTimer tool from the UI.",
+                  "openai/widgetPrefersBorder": true,
+                },
+              },
+            ],
+          },
         });
       }
     }
 
-    if (method === "tools/call" && params?.name === "topMovers") {
-      const limit = Number(params?.arguments?.limit ?? 10);
-      const result = await fetchTopMovers(Number.isFinite(limit) ? limit : 10);
+    if (method === "tools/call" && params?.name === "startTimer") {
+      const { durationSeconds } = params?.arguments || {};
+      const result = await startTimer(durationSeconds);
       return res.json({ jsonrpc: "2.0", id, result });
     }
 
-    // Return JSON-RPC error with HTTP 200 so clients like PowerShell don't throw
-    return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+    // Return JSON-RPC error with HTTP 200
+    return res.json({
+      jsonrpc: "2.0",
+      id,
+      error: { code: -32601, message: "Method not found" },
+    });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || "Server error" });
+    log.error("MCP JSON-RPC error:", err.message);
+    res.status(500).json({ 
+      error: err.message || "Internal server error",
+      timestamp: new Date().toISOString(),
+    });
   }
 });
 
-// ────────────────────────── Health & Static ──────────────────────────
-app.get("/health", (_req, res) => res.send("ok"));
+// ────────────────────────── Health Check ──────────────────────────
+app.get("/health", (_req, res) => {
+  const health = {
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    server: "timer-countdown-server",
+    version: "1.0.0",
+  };
+  res.json(health);
+});
+
+// ────────────────────────── Static Assets ──────────────────────────
 app.use("/web", express.static("web"));
 
-// ────────────────────────── Start ──────────────────────────
+// ────────────────────────── Start Server ──────────────────────────
 app.listen(PORT, () => {
-  console.log(`✅ Server running on http://localhost:${PORT}`);
+  log.success(`⏰ Timer Countdown MCP Server running on http://localhost:${PORT}`);
+  log.info(`📡 MCP endpoint: POST /mcp`);
+  log.info(`🔧 REST endpoint: POST /tools/startTimer`);
+  log.info(`❤️ Health check: GET /health`);
+  log.info(`📦 Static assets: /web/*`);
 });

@@ -2,8 +2,8 @@
 const { build } = require('esbuild');
 
 build({
-  entryPoints: ['web/src/widget.ts'],
-  outfile: 'web/dist/widget.js',
+  entryPoints: ['web/src/timer-widget.ts'],
+  outfile: 'web/dist/timer-widget.js',
   bundle: true,
   format: 'esm',
   sourcemap: true,
