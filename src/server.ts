@@ -127,15 +127,103 @@ app.post("/mcp", async (req, res) => {
   try {
     const { id = null, method, params = {} } = req.body || {};
 
+    // MCP Protocol Methods
+    if (method === "initialize") {
+      return res.json({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          protocolVersion: "2024-11-05",
+          capabilities: {
+            tools: {},
+            resources: {}
+          },
+          serverInfo: {
+            name: "top-movers-server",
+            version: "0.2.0"
+          }
+        }
+      });
+    }
+
+    if (method === "tools/list") {
+      return res.json({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          tools: [{
+            name: "topMovers",
+            title: "Top Movers",
+            description: "Fetch Alpha Vantage TOP_GAINERS_LOSERS and return top gainers/losers.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                limit: {
+                  type: "number",
+                  minimum: 1,
+                  maximum: 50,
+                  default: 10
+                }
+              }
+            },
+            _meta: {
+              "openai/outputTemplate": "ui://widget/top-movers.html",
+              "openai/toolInvocation/invoking": "Fetching top movers…",
+              "openai/toolInvocation/invoked": "Top movers fetched.",
+              "openai/widgetAccessible": true
+            }
+          }]
+        }
+      });
+    }
+
+    if (method === "resources/list") {
+      return res.json({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          resources: [{
+            uri: "ui://widget/top-movers.html",
+            name: "top-movers-widget",
+            description: "Top movers widget component",
+            mimeType: "text/html+skybridge"
+          }]
+        }
+      });
+    }
+
+    if (method === "resources/read") {
+      const uri = params?.uri;
+      if (uri === "ui://widget/top-movers.html") {
+        return res.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            contents: [{
+              uri: "ui://widget/top-movers.html",
+              mimeType: "text/html+skybridge",
+              text: `
+<div id="top-movers-root"></div>
+<script type="module">${WIDGET_JS}</script>
+              `.trim(),
+              _meta: {
+                "openai/widgetDescription": "Displays top gainers and losers from Alpha Vantage and can call the topMovers tool from the UI.",
+                "openai/widgetPrefersBorder": true
+              }
+            }]
+          }
+        });
+      }
+    }
+
     if (method === "tools/call" && params?.name === "topMovers") {
       const limit = Number(params?.arguments?.limit ?? 10);
       const result = await fetchTopMovers(Number.isFinite(limit) ? limit : 10);
       return res.json({ jsonrpc: "2.0", id, result });
     }
 
-    res
-      .status(400)
-      .json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+    // Return JSON-RPC error with HTTP 200 so clients like PowerShell don't throw
+    return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || "Server error" });
   }
