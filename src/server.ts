@@ -127,6 +127,28 @@ app.post("/tools/topMovers", async (req, res) => {
 app.get("/health", (_req, res) => res.send("ok"));
 app.use("/web", express.static("web"));
 
+// MCP JSON-RPC endpoint
+app.post("/mcp", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const id = body.id ?? null;
+    const method = body.method;
+    const params = body.params || {};
+
+    // Minimal JSON-RPC bridge for tools/call → topMovers
+    if (method === "tools/call" && params?.name === "topMovers") {
+      const limit = Number(params?.arguments?.limit ?? 10);
+      const result = await fetchTopMovers(Number.isFinite(limit) ? limit : 10);
+      return res.json({ jsonrpc: "2.0", id, result });
+    }
+
+    // Unsupported method
+    return res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Server error" });
+  }
+});
+
 app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`Server running on http://localhost:${PORT}`);
