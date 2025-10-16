@@ -434,4 +434,90 @@ function startApp() {
   }
 }
 
+
+
+// ---- BRIDGE: let "chat/tool" populate the UI ----
+declare global {
+    interface Window {
+      timerApp: {
+        // Create a new timer (e.g. called by chat)
+        create: (args: { id?: string; name: string; durationSeconds: number }) => void;
+        // Update remaining seconds / status for an existing timer
+        update: (args: { id: string; remainingSeconds?: number; status?: 'running'|'paused'|'stopped'|'completed' }) => void;
+        // Stop a timer
+        stop: (args: { id: string }) => void;
+      };
+    }
+  }
+  
+  function upsertExternalTimer(args: { id?: string; name: string; durationSeconds: number }) {
+    const id = args.id ?? `${args.name}-${Date.now()}`;
+    if (!activeTimers.has(id)) {
+      // Reuse internal creator; preserves the update loop behavior
+      callTimer(args.name, args.durationSeconds).then(() => {
+        // Replace generated id with provided one if necessary
+        if (args.id) {
+          const tempId = Array.from(activeTimers.keys()).find(k => k.startsWith(`${args.name}-`))!;
+          const t = activeTimers.get(tempId)!;
+          activeTimers.delete(tempId);
+          t.id = args.id;
+          activeTimers.set(args.id, t);
+          renderActiveTimers();
+        }
+      });
+    } else {
+      // If already present, refresh remaining
+      const t = activeTimers.get(id)!;
+      t.remainingSeconds = Math.max(0, args.durationSeconds);
+      t.status = t.remainingSeconds > 0 ? 'running' : 'completed';
+      renderActiveTimers();
+      renderHistory();
+    }
+  }
+  
+  window.timerApp = {
+    create: ({ id, name, durationSeconds }) => {
+      upsertExternalTimer({ id, name, durationSeconds });
+    },
+    update: ({ id, remainingSeconds, status }) => {
+      const t = activeTimers.get(id);
+      if (!t) return;
+      if (typeof remainingSeconds === 'number') {
+        t.remainingSeconds = Math.max(0, remainingSeconds);
+        updateTimerDisplay(t.id, t.remainingSeconds);
+      }
+      if (status) t.status = status;
+      if (t.status === 'completed' || t.remainingSeconds === 0) {
+        activeTimers.delete(id);
+        timerHistory.push({
+          id, name: t.name, originalDuration: t.originalDuration,
+          elapsedSeconds: t.originalDuration, completedAt: new Date().toISOString(), status: 'completed'
+        });
+        playNotificationSound();
+      }
+      renderActiveTimers(); renderHistory(); maybeStopLoop();
+    },
+    stop: ({ id }) => {
+      const t = activeTimers.get(id);
+      if (!t) return;
+      controlTimer(id, 'stop');
+    }
+  };
+  
+  // Optional: accept events from another frame/process via postMessage
+  type TimerToolEvent =
+    | { type: 'timer.created'; id?: string; name: string; durationSeconds: number }
+    | { type: 'timer.updated'; id: string; remainingSeconds?: number; status?: 'running'|'paused'|'stopped'|'completed' }
+    | { type: 'timer.stopped'; id: string };
+  
+  window.addEventListener('message', (evt: MessageEvent) => {
+    const data = evt.data as { source?: string; tool?: string; event?: TimerToolEvent };
+    if (!data || data.tool !== 'timerapp' || !data.event) return;
+    const ev = data.event;
+    if (ev.type === 'timer.created') window.timerApp.create(ev);
+    if (ev.type === 'timer.updated') window.timerApp.update(ev);
+    if (ev.type === 'timer.stopped') window.timerApp.stop(ev);
+  });
+
+  
 startApp();
