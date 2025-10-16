@@ -217,6 +217,12 @@ function updateTimerDisplay(timerId: string, remainingSeconds: number) {
 }
 
 function renderUI() {
+  // Ensure root exists
+  if (!root) {
+    console.error('Timer root element not found');
+    return;
+  }
+  
   root.innerHTML = "";
   
   const container = document.createElement("div");
@@ -352,7 +358,18 @@ function renderUI() {
     gap: 8px;
   `;
 
-  timerPresets.forEach(preset => {
+  // Default presets if none loaded
+  const defaultPresets = [
+    { name: "Quick Break", durationSeconds: 60, label: "1min" },
+    { name: "Coffee Break", durationSeconds: 300, label: "5min" },
+    { name: "Work Session", durationSeconds: 1500, label: "25min" },
+    { name: "Long Break", durationSeconds: 900, label: "15min" },
+    { name: "Exercise", durationSeconds: 1800, label: "30min" },
+    { name: "Deep Work", durationSeconds: 3600, label: "1hr" }
+  ];
+
+  const presetsToShow = timerPresets.length > 0 ? timerPresets : defaultPresets;
+  presetsToShow.forEach(preset => {
     presetsContainer.appendChild(createPresetButton(preset));
   });
 
@@ -431,7 +448,7 @@ function renderUI() {
   }
 
   historySection.appendChild(historyTitle);
-  historyContainer.appendChild(historyContainer);
+  historySection.appendChild(historyContainer);
 
   container.appendChild(header);
   container.appendChild(customSection);
@@ -477,6 +494,12 @@ function startUpdateLoop() {
 
 async function callTimer(name: string, durationSeconds: number) {
   try {
+    if (!window.openai?.callTool) {
+      console.error('OpenAI callTool not available');
+      alert('Timer functionality not available in this context');
+      return;
+    }
+
     const result = await window.openai.callTool("startTimer", { name, durationSeconds });
     const structured = result?.structuredContent ?? window.openai.toolOutput ?? {};
     
@@ -510,12 +533,18 @@ async function callTimer(name: string, durationSeconds: number) {
     }
     
   } catch (e) {
-    alert("Failed to start timer");
+    console.error('Failed to start timer:', e);
+    alert("Failed to start timer. Please try again.");
   }
 }
 
 async function controlTimer(timerId: string, action: 'pause' | 'resume' | 'stop') {
   try {
+    if (!window.openai?.callTool) {
+      console.error('OpenAI callTool not available');
+      return;
+    }
+
     const result = await window.openai.callTool("controlTimer", { timerId, action });
     const structured = result?.structuredContent ?? window.openai.toolOutput ?? {};
     
@@ -539,26 +568,34 @@ async function controlTimer(timerId: string, action: 'pause' | 'resume' | 'stop'
     }
     
   } catch (e) {
-    alert(`Failed to ${action} timer`);
+    console.error(`Failed to ${action} timer:`, e);
+    alert(`Failed to ${action} timer. Please try again.`);
   }
 }
 
 async function refreshStatus() {
   try {
+    if (!window.openai?.callTool) {
+      console.error('OpenAI callTool not available');
+      return;
+    }
+
     const result = await window.openai.callTool("getTimerStatus", {});
     const structured = result?.structuredContent ?? window.openai.toolOutput ?? {};
     
     if (structured.activeTimers) {
       activeTimers.clear();
       structured.activeTimers.forEach((t: any) => {
-        activeTimers.set(t.id, {
-          id: t.id,
-          name: t.name,
-          remainingSeconds: t.remainingSeconds,
-          status: t.status,
-          minutesLeft: t.minutesLeft,
-          secondsLeft: t.secondsLeft,
-        });
+        if (t && t.id) {
+          activeTimers.set(t.id, {
+            id: t.id,
+            name: t.name || 'Timer',
+            remainingSeconds: t.remainingSeconds || 0,
+            status: t.status || 'running',
+            minutesLeft: t.minutesLeft || 0,
+            secondsLeft: t.secondsLeft || 0,
+          });
+        }
       });
     }
     
@@ -580,42 +617,63 @@ async function refreshStatus() {
 
 async function init() {
   try {
-    // Try to get initial data
-    const structured = window.openai.toolOutput ?? {};
+    // Always render UI first to avoid blank space
+    renderUI();
     
-    if (structured.activeTimers) {
+    // Try to get initial data
+    const structured = window.openai?.toolOutput ?? {};
+    
+    if (structured.activeTimers && Array.isArray(structured.activeTimers)) {
       structured.activeTimers.forEach((t: any) => {
-        activeTimers.set(t.id, {
-          id: t.id,
-          name: t.name,
-          remainingSeconds: t.remainingSeconds,
-          status: t.status,
-          minutesLeft: t.minutesLeft,
-          secondsLeft: t.secondsLeft,
-        });
+        if (t && t.id) {
+          activeTimers.set(t.id, {
+            id: t.id,
+            name: t.name || 'Timer',
+            remainingSeconds: t.remainingSeconds || 0,
+            status: t.status || 'running',
+            minutesLeft: t.minutesLeft || 0,
+            secondsLeft: t.secondsLeft || 0,
+          });
+        }
       });
     }
     
-    if (structured.presets) {
+    if (structured.presets && Array.isArray(structured.presets)) {
       timerPresets = structured.presets;
     }
     
-    if (structured.history) {
+    if (structured.history && Array.isArray(structured.history)) {
       timerHistory = structured.history;
     }
     
+    // Re-render with data
     renderUI();
     startUpdateLoop();
     
   } catch (e) {
-    // Fallback: show empty state
+    console.error('Timer widget init error:', e);
+    // Ensure UI is always rendered
     renderUI();
   }
 }
 
-// Initialize when DOM is ready
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", init);
-} else {
+// Ensure root element exists before initializing
+function ensureRootExists() {
+  if (!root) {
+    console.error('Timer root element not found');
+    return false;
+  }
+  return true;
+}
+
+// Initialize immediately
+if (ensureRootExists()) {
   init();
+} else {
+  // Retry after a short delay
+  setTimeout(() => {
+    if (ensureRootExists()) {
+      init();
+    }
+  }, 100);
 }
