@@ -13,7 +13,7 @@ app.use(express.json());
 
 console.log(
     "Alpha Vantage key:",
-    process.env.ALPHA_VANTAGE_API_KEY ? "✅ Loaded" : "❌ Missing"
+    process.env.ALPHAVANTAGE_API_KEY ? "✅ Loaded" : "❌ Missing"
   );
 
 // skip ngrok warning banner
@@ -23,7 +23,7 @@ app.use((_req, res, next) => {
 });
 
 const PORT = Number(process.env.PORT || 3000);
-const ALPHAVANTAGE_API_KEY = process.env.ALPHAVANTAGE_API_KEY || "";
+const ALPHAVANTAGE_API_KEY = "X6358EK4LJQESFCV";
 
 // ────────────────────────── MCP Server ──────────────────────────
 const server = new McpServer({
