@@ -5,12 +5,12 @@ import dotenv from "dotenv";
 import { readFileSync } from "node:fs";
 
 // Import modules
-import { corsMiddleware } from './middleware/cors.js';
-import { log } from './middleware/logging.js';
-import { PORT, SERVER_INFO } from './config/index.js';
-import { registerMcpTools, handleMcpRequest } from './services/mcpService.js';
-import { startTimerUpdateLoop, getActiveTimers, getTimerHistory } from './services/timerService.js';
-import routes from './routes/index.js';
+import { corsMiddleware } from './middleware/cors';
+import { log } from './middleware/logging';
+import { PORT, SERVER_INFO } from './config';
+import { registerMcpTools, handleMcpRequest } from './services/mcpService';
+import { startTimerUpdateLoop, getActiveTimers, getTimerHistory } from './services/timerService';
+import routes from './routes';
 
 // ────────────────────────── Configuration ──────────────────────────
 dotenv.config();

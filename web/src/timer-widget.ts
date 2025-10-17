@@ -198,6 +198,101 @@ function stopServerSync() {
   }
 }
 
+// Reliable post-action refresh pattern
+async function refreshTimerStatus() {
+  try {
+    const response = await fetch(`${SERVER_BASE_URL}/api/timers`);
+    if (!response.ok) return;
+    
+    const data = await response.json();
+    
+    // Update presets from server
+    if (data.presets) {
+      timerPresets = data.presets;
+    }
+    
+    // Update history from server
+    if (data.history) {
+      timerHistory = data.history.map((h: any) => ({
+        id: h.id,
+        name: h.name,
+        originalDuration: h.originalDuration || h.durationSeconds,
+        elapsedSeconds: h.elapsedSeconds || (h.originalDuration || h.durationSeconds) - (h.remainingSeconds || 0),
+        completedAt: h.completedAt,
+        status: h.status
+      }));
+    }
+    
+    // Update active timers from server (single source of truth)
+    if (data.activeTimers) {
+      const serverTimers = new Map<string, Timer>();
+      
+      data.activeTimers.forEach((serverTimer: any) => {
+        const timer: Timer = {
+          id: serverTimer.id,
+          name: serverTimer.name,
+          remainingSeconds: serverTimer.remainingSeconds,
+          status: serverTimer.status,
+          originalDuration: serverTimer.originalDuration
+        };
+        serverTimers.set(timer.id, timer);
+      });
+      
+      // Replace local state with server state
+      activeTimers.clear();
+      serverTimers.forEach((timer, id) => {
+        activeTimers.set(id, timer);
+      });
+      
+      renderActiveTimers();
+      renderHistory();
+    }
+  } catch (error) {
+    console.warn('Failed to refresh timer status:', error);
+  }
+}
+
+// Polling for live updates after actions
+let pollingInterval: IntervalHandle | null = null;
+let pollingTimeout: IntervalHandle | null = null;
+
+function startPollingForUpdates() {
+  if (pollingInterval) return; // Already polling
+  
+  // Poll every 1 second for 10 seconds after action
+  pollingInterval = setInterval(refreshTimerStatus, 1000);
+  
+  // Stop polling after 10 seconds
+  pollingTimeout = setTimeout(() => {
+    stopPollingForUpdates();
+  }, 10000);
+}
+
+function stopPollingForUpdates() {
+  if (pollingInterval) {
+    clearInterval(pollingInterval);
+    pollingInterval = null;
+  }
+  if (pollingTimeout) {
+    clearTimeout(pollingTimeout);
+    pollingTimeout = null;
+  }
+}
+
+// Debounce function to prevent double-clicks
+let lastActionTime = 0;
+const DEBOUNCE_MS = 500;
+
+function debounceAction(action: () => void) {
+  const now = Date.now();
+  if (now - lastActionTime < DEBOUNCE_MS) {
+    console.log('Action debounced - too soon after last action');
+    return;
+  }
+  lastActionTime = now;
+  action();
+}
+
 function updateHeaderSubtitle() {
   const el = $('header-subtitle');
   if (el) el.textContent = `${activeTimers.size} active timers • ${timerHistory.length} completed`;
@@ -377,17 +472,19 @@ function renderUI() {
   startBtn.textContent = 'Start';
   startBtn.style.cssText = 'padding:8px 16px;background:#27ae60;color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;';
   startBtn.onclick = () => {
-    const raw = inputValues.duration.trim();
-    if (!/^\d+$/.test(raw)) { alert('Enter a valid integer duration (1–7200 seconds)'); return; }
-    let seconds = parseInt(raw, 10);
-    if (seconds < 1 || seconds > MAX_DURATION) { alert('Enter valid duration (1–7200 seconds)'); return; }
-    const name = (inputValues.name || '').trim() || `Timer ${activeTimers.size + 1}`;
-    callTimer(name, seconds);
-    inputValues.name = '';
-    inputValues.duration = '';
-    nameInput.value = '';
-    durationInput.value = '';
-    restoreFocus();
+    debounceAction(() => {
+      const raw = inputValues.duration.trim();
+      if (!/^\d+$/.test(raw)) { alert('Enter a valid integer duration (1–7200 seconds)'); return; }
+      let seconds = parseInt(raw, 10);
+      if (seconds < 1 || seconds > MAX_DURATION) { alert('Enter valid duration (1–7200 seconds)'); return; }
+      const name = (inputValues.name || '').trim() || `Timer ${activeTimers.size + 1}`;
+      callTimer(name, seconds);
+      inputValues.name = '';
+      inputValues.duration = '';
+      nameInput.value = '';
+      durationInput.value = '';
+      restoreFocus();
+    });
   };
 
   customForm.appendChild(nameInput);
@@ -450,7 +547,20 @@ function createPresetButton(preset: TimerPreset): HTMLElement {
 
 async function callTimer(name: string, durationSeconds: number) {
   try {
-    // Try to create timer on server first
+    // Optimistic UI: Add timer immediately for instant feedback
+    const optimisticId = `${name}-${Date.now()}`;
+    const optimisticTimer: Timer = {
+      id: optimisticId,
+      name,
+      remainingSeconds: durationSeconds,
+      originalDuration: durationSeconds,
+      status: 'running'
+    };
+    activeTimers.set(optimisticId, optimisticTimer);
+    renderActiveTimers();
+    if (!updateInterval) startUpdateLoop();
+
+    // Try to create timer on server
     try {
       const response = await fetch(`${SERVER_BASE_URL}/api/timers`, {
         method: 'POST',
@@ -462,8 +572,14 @@ async function callTimer(name: string, durationSeconds: number) {
       
       if (response.ok) {
         const data = await response.json();
-        if (data.structuredContent?.timer) {
+        
+        // Post-action refresh: Get fresh status immediately
+        await refreshTimerStatus();
+        
+        // If server returned a different ID, update our optimistic timer
+        if (data.structuredContent?.timer?.id && data.structuredContent.timer.id !== optimisticId) {
           const serverTimer = data.structuredContent.timer;
+          activeTimers.delete(optimisticId);
           const t: Timer = {
             id: serverTimer.id,
             name: serverTimer.name || name,
@@ -473,28 +589,20 @@ async function callTimer(name: string, durationSeconds: number) {
           };
           activeTimers.set(t.id, t);
           renderActiveTimers();
-          if (!updateInterval) startUpdateLoop();
-          return;
         }
+        
+        // Start polling for live updates
+        startPollingForUpdates();
+        return;
       } else {
         console.warn(`Server timer creation failed: ${response.status} ${response.statusText}`);
       }
     } catch (serverError) {
-      console.warn('Server timer creation failed, falling back to local:', serverError);
+      console.warn('Server timer creation failed, keeping optimistic timer:', serverError);
     }
     
-    // Fallback to local timer creation
-    const id = `${name}-${Date.now()}`;
-    const t: Timer = {
-      id,
-      name,
-      remainingSeconds: durationSeconds,
-      originalDuration: durationSeconds,
-      status: 'running'
-    };
-    activeTimers.set(id, t);
-    renderActiveTimers();
-    if (!updateInterval) startUpdateLoop();
+    // If server fails, keep the optimistic timer but start polling
+    startPollingForUpdates();
   } catch (e) {
     console.error(e);
   }
@@ -504,45 +612,55 @@ async function controlTimer(timerId: string, action: 'pause' | 'resume' | 'stop'
   const t = activeTimers.get(timerId);
   if (!t) return;
 
-  // Try to control timer on server first
-  try {
-    const response = await fetch(`${SERVER_BASE_URL}/api/timers/${timerId}/control`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ action })
-    });
-    
-    if (response.ok) {
-      // Server control successful, let sync handle the updates
-      return;
-    } else {
-      console.warn(`Server timer control failed: ${response.status} ${response.statusText}`);
+  // Debounce to prevent double-clicks
+  debounceAction(async () => {
+    // Optimistic UI: Update immediately for instant feedback
+    if (action === 'pause') t.status = 'paused';
+    if (action === 'resume') t.status = 'running';
+    if (action === 'stop') {
+      t.status = 'stopped';
+      const elapsed = t.originalDuration - Math.max(0, t.remainingSeconds);
+      activeTimers.delete(timerId);
+      timerHistory.push({
+        id: t.id,
+        name: t.name,
+        originalDuration: t.originalDuration,
+        elapsedSeconds: clamp(elapsed, 0, t.originalDuration),
+        completedAt: new Date().toISOString(),
+        status: 'stopped'
+      });
     }
-  } catch (serverError) {
-    console.warn('Server timer control failed, falling back to local:', serverError);
-  }
+    renderActiveTimers();
+    renderHistory();
+    maybeStopLoop();
 
-  // Fallback to local control
-  if (action === 'pause') t.status = 'paused';
-  if (action === 'resume') t.status = 'running';
-  if (action === 'stop') {
-    t.status = 'stopped';
-    const elapsed = t.originalDuration - Math.max(0, t.remainingSeconds);
-    activeTimers.delete(timerId);
-    timerHistory.push({
-      id: t.id,
-      name: t.name,
-      originalDuration: t.originalDuration,
-      elapsedSeconds: clamp(elapsed, 0, t.originalDuration),
-      completedAt: new Date().toISOString(),
-      status: 'stopped'
-    });
-  }
-  renderActiveTimers();
-  renderHistory();
-  maybeStopLoop();
+    // Try to control timer on server
+    try {
+      const response = await fetch(`${SERVER_BASE_URL}/api/timers/${timerId}/control`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action })
+      });
+      
+      if (response.ok) {
+        // Post-action refresh: Get fresh status immediately
+        await refreshTimerStatus();
+        
+        // Start polling for live updates
+        startPollingForUpdates();
+        return;
+      } else {
+        console.warn(`Server timer control failed: ${response.status} ${response.statusText}`);
+      }
+    } catch (serverError) {
+      console.warn('Server timer control failed, keeping optimistic state:', serverError);
+    }
+    
+    // If server fails, keep optimistic state but start polling
+    startPollingForUpdates();
+  });
 }
 
 function startUpdateLoop() {
